@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import analyses.section4 as s4
+import analyses.section5 as s5
 
 
 # ── Palette monochrome ───────────────────────────────────────────────────────
@@ -44,14 +45,19 @@ def _bouton(parent, texte, commande):
     return btn
 
 
-def _bouton_stat(parent, nombre, label, commande, couleur_bord):
-    """Petit bouton avec nombre en gros + label, bordure colorée."""
+def _bouton_stat(parent, nombre, label, commande, couleur_bord, textvariable=None):
+    """Petit bouton avec nombre en gros + label, bordure colorée.
+    Si textvariable est fourni, le nombre se met à jour automatiquement."""
     cadre = tk.Frame(parent, bg=couleur_bord, padx=2, pady=2)
     inner = tk.Frame(cadre, bg=CARD_BG, cursor="hand2")
     inner.pack(fill='both', expand=True)
 
-    lbl_n = tk.Label(inner, text=str(nombre), bg=CARD_BG, fg=BTN_FG,
-                     font=("Segoe UI", 13, "bold"), cursor="hand2")
+    if textvariable:
+        lbl_n = tk.Label(inner, textvariable=textvariable, bg=CARD_BG, fg=BTN_FG,
+                         font=("Segoe UI", 13, "bold"), cursor="hand2")
+    else:
+        lbl_n = tk.Label(inner, text=str(nombre), bg=CARD_BG, fg=BTN_FG,
+                         font=("Segoe UI", 13, "bold"), cursor="hand2")
     lbl_n.pack(padx=16, pady=(6, 0))
 
     lbl_t = tk.Label(inner, text=label, bg=CARD_BG, fg="#666666",
@@ -88,26 +94,60 @@ def build_tab_section4(notebook):
     tab = ttk.Frame(notebook, style="Card.TFrame")
     notebook.add(tab, text="  Section 4  ")
 
-    # Conteneur principal qui couvre tout l'onglet
     main = tk.Frame(tab, bg=CARD_BG)
     main.pack(fill='both', expand=True, padx=28, pady=22)
 
+    # ── Sélecteur de dataset ──────────────────────────────────────────────────
+    choix = tk.StringVar(value="original")
+
+    def get_data():
+        """Retourne le bon dataframe selon la sélection."""
+        if choix.get() == "prepare":
+            return s5.df_prepared
+        return None  # les fonctions section4 utilisent df par défaut
+
+    row_choix = tk.Frame(main, bg=CARD_BG)
+    row_choix.pack(fill='x', pady=(0, 14))
+
+    tk.Label(row_choix, text="Dataset :", bg=CARD_BG, fg=BTN_FG,
+             font=("Segoe UI", 9, "bold")).pack(side='left')
+
+    for valeur, texte in [("original", "Données originales"), ("prepare", "Données préparées")]:
+        tk.Radiobutton(
+            row_choix, text=texte, variable=choix, value=valeur,
+            bg=CARD_BG, fg=BTN_FG, selectcolor=CARD_BG,
+            activebackground=CARD_BG, font=("Segoe UI", 9), cursor="hand2"
+        ).pack(side='left', padx=(12, 0))
+
     # ── Histogramme ──────────────────────────────────────────────────────────
-    _bouton(main, "Histogramme", s4.show_histogrammes).pack(fill='x', pady=(0, 8))
+    _bouton(main, "Histogramme",
+            lambda: s4.show_histogrammes(get_data())).pack(fill='x', pady=(0, 8))
 
     # ── Type de donnée ───────────────────────────────────────────────────────
-    _bouton(main, "Type de donnée", s4.show_types_donnees).pack(fill='x', pady=(0, 8))
+    _bouton(main, "Type de donnée",
+            lambda: s4.show_types_donnees(get_data())).pack(fill='x', pady=(0, 8))
 
     # ── Données manquantes  |  [X NA]  [X Ab] ────────────────────────────────
+    # StringVars pour les compteurs — mis à jour quand on change de dataset
+    na_var = tk.StringVar(value=str(s4.NA_COUNT))
+    ab_var = tk.StringVar(value=str(s4.AB_COUNT))
+
+    def _maj_compteurs(*_):
+        data = get_data()
+        na_var.set(str(s4.get_na_count(data)))
+        ab_var.set(str(s4.get_ab_count(data)))
+
+    choix.trace_add("write", _maj_compteurs)
+
     row = tk.Frame(main, bg=CARD_BG)
     row.pack(fill='x', pady=(0, 8))
 
-    # On pack les boutons droits EN PREMIER pour que le bouton gauche remplisse le reste
-    _bouton_stat(row, s4.AB_COUNT, "Ab", s4.show_aberantes,
-                 "#C0392B").pack(side='right')
-    _bouton_stat(row, s4.NA_COUNT, "NA", s4.show_na,
-                 "#2E9E4F").pack(side='right', padx=(0, 8))
-    _bouton(row, "Données manquantes", s4.show_donnees_manquantes).pack(
+    _bouton_stat(row, None, "Ab", lambda: s4.show_aberantes(get_data()),
+                 "#C0392B", textvariable=ab_var).pack(side='right')
+    _bouton_stat(row, None, "NA", lambda: s4.show_na(get_data()),
+                 "#2E9E4F", textvariable=na_var).pack(side='right', padx=(0, 8))
+    _bouton(row, "Données manquantes",
+            lambda: s4.show_donnees_manquantes(get_data())).pack(
         side='left', fill='x', expand=True, padx=(0, 8))
 
     # ── Séparateur ───────────────────────────────────────────────────────────
@@ -119,14 +159,75 @@ def build_tab_section4(notebook):
     bas = tk.Frame(main, bg=CARD_BG)
     bas.pack(fill='x')
 
-    # Carte verte : nombre d'éléments
     _carte_info(bas, nb_lignes, "éléments", "#4A8C4A").pack(
         side='left', fill='both', expand=True, padx=(0, 4))
 
-    # Cartes colorées : une par type de donnée
     for i, (count, dtype_label, couleur) in enumerate(cartes_dtype):
         padx = (0, 4) if i < len(cartes_dtype) - 1 else (0, 0)
         _carte_info(bas, count, f"col. {dtype_label}", couleur).pack(
+            side='left', fill='both', expand=True, padx=padx)
+
+    return tab
+
+
+def build_tab_section5(notebook):
+    tab = ttk.Frame(notebook, style="Card.TFrame")
+    notebook.add(tab, text="  Section 5  ")
+
+    main = tk.Frame(tab, bg=CARD_BG)
+    main.pack(fill='both', expand=True, padx=28, pady=22)
+
+    # ── Traitement NA ─────────────────────────────────────────────────────────
+    row_na = tk.Frame(main, bg=CARD_BG)
+    row_na.pack(fill='x', pady=(0, 8))
+
+    _bouton_stat(row_na, s5.NB_NA_TRAITES, "col. traitées", s5.show_traitement_na,
+                 "#2E9E4F").pack(side='right')
+    _bouton(row_na, "Traitement NA", s5.show_traitement_na).pack(
+        side='left', fill='x', expand=True, padx=(0, 8))
+
+    # ── Traitement aberrants ──────────────────────────────────────────────────
+    row_ab = tk.Frame(main, bg=CARD_BG)
+    row_ab.pack(fill='x', pady=(0, 8))
+
+    _bouton_stat(row_ab, s5.NB_AB_TRAITES, "col. écrêtées", s5.show_traitement_aberrants,
+                 "#C0392B").pack(side='right')
+    _bouton(row_ab, "Traitement aberrants", s5.show_traitement_aberrants).pack(
+        side='left', fill='x', expand=True, padx=(0, 8))
+
+    # ── Encodage qualitatif ───────────────────────────────────────────────────
+    row_enc = tk.Frame(main, bg=CARD_BG)
+    row_enc.pack(fill='x', pady=(0, 8))
+
+    _bouton_stat(row_enc, s5.NB_ENCODES, "col. encodées", s5.show_encodage,
+                 "#4A7FA5").pack(side='right')
+    _bouton(row_enc, "Encodage qualitatif", s5.show_encodage).pack(
+        side='left', fill='x', expand=True, padx=(0, 8))
+
+    # ── Normalisation ─────────────────────────────────────────────────────────
+    row_norm = tk.Frame(main, bg=CARD_BG)
+    row_norm.pack(fill='x', pady=(0, 8))
+
+    _bouton_stat(row_norm, s5.NB_SCALES, "col. normalisées", s5.show_normalisation,
+                 "#7A5A9A").pack(side='right')
+    _bouton(row_norm, "Normalisation", s5.show_normalisation).pack(
+        side='left', fill='x', expand=True, padx=(0, 8))
+
+    # ── Données préparées ─────────────────────────────────────────────────────
+    _bouton(main, "Données après préparation", s5.show_donnees_preparees).pack(
+        fill='x', pady=(0, 8))
+
+    # ── Séparateur ────────────────────────────────────────────────────────────
+    tk.Frame(main, bg="#DDDDDD", height=1).pack(fill='x', pady=(10, 14))
+
+    # ── Cartes de stats en bas ────────────────────────────────────────────────
+    bas = tk.Frame(main, bg=CARD_BG)
+    bas.pack(fill='x')
+
+    cartes = s5.get_info_section5()
+    for i, (valeur, label, couleur) in enumerate(cartes):
+        padx = (0, 4) if i < len(cartes) - 1 else (0, 0)
+        _carte_info(bas, valeur, label, couleur).pack(
             side='left', fill='both', expand=True, padx=padx)
 
     return tab
@@ -146,5 +247,6 @@ def lancer_interface():
     notebook.pack(fill='both', expand=True)
 
     build_tab_section4(notebook)
+    build_tab_section5(notebook)
 
     root.mainloop()
