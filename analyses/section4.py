@@ -1,13 +1,36 @@
 import matplotlib.pyplot as plt
-from analyses.data import df
+import pandas as pd
+from analyses.data import df, ORDRE_ENCODAGE
 
 
-# ── Calculs sur le dataset original (référence pour section5) ────────────────
+# ── Encodage des variables texte ──────────────────────────────────────────────
+
+def _encoder_qualitatives(data):
+    """
+    Convertit les colonnes texte en entiers selon l'ordre logique (ORDRE_ENCODAGE),
+    le même mapping que la préparation (section 5). Sans ça, la section 4 laisserait
+    de côté ces 5 variables car ses graphes ne prennent que les colonnes numériques.
+    On examine ainsi TOUTES les variables. No-op sur une colonne déjà numérique
+    (donc sans effet sur le dataset préparé).
+    """
+    data = data.copy()
+    for col, ordre in ORDRE_ENCODAGE.items():
+        if col in data.columns and not pd.api.types.is_numeric_dtype(data[col]):
+            data[col] = data[col].map({categorie: code for code, categorie in enumerate(ordre)})
+    return data
+
+
+# Dataset de travail de la section 4 : les 5 colonnes texte sont converties en int
+# pour qu'elles soient examinées comme les autres variables.
+df_num = _encoder_qualitatives(df)
+
+
+# ── Calculs (référence pour section5) ─────────────────────────────────────────
 
 def _compter_aberrants_par_col(data=None):
     """IQR : valeurs en dehors de [Q1 - 1.5*IQR, Q3 + 1.5*IQR]."""
     if data is None:
-        data = df
+        data = df_num
     cols = [c for c in data.select_dtypes(include=['number']).columns
             if c not in ('id', 'outcome')]
     result = {}
@@ -78,9 +101,10 @@ def _tableau_matplotlib(titre, entetes, lignes, ligne_total):
 # ── Fonctions ouvertes par les boutons ────────────────────────────────────────
 
 def show_histogrammes(data=None):
-    """Distribution de chaque variable numérique, colorée par outcome."""
+    """Distribution de chaque variable (texte converti en int), colorée par outcome."""
     if data is None:
         data = df
+    data = _encoder_qualitatives(data)
 
     COUNT_COLS_LIMITS = {
         'children': 5, 'speeding_violations': 16,
@@ -93,9 +117,12 @@ def show_histogrammes(data=None):
     n_cols = 3
     n_rows = (len(cols) + n_cols - 1) // n_cols
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 3 * n_rows))
+    # constrained_layout gère l'espacement entre les sous-graphes et réserve la
+    # place du suptitre : sans ça les titres se chevauchaient avec le graphe du dessus.
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 3.2 * n_rows),
+                             constrained_layout=True)
     fig.suptitle(
-        "Distribution des variables numériques\nVert = pas de sinistre  |  Rouge = sinistre",
+        "Distribution des variables\nVert = pas de sinistre  |  Rouge = sinistre",
         fontsize=11
     )
     axes = axes.flatten()
@@ -120,12 +147,14 @@ def show_histogrammes(data=None):
     for j in range(len(cols), len(axes)):
         axes[j].set_visible(False)
 
-    plt.tight_layout()
     plt.show()
 
 
 def show_types_donnees(data=None):
-    """Tableau des types de chaque colonne."""
+    """
+    Tableau des types de chaque colonne, avec l'encodage str -> int appliqué aux
+    variables qualitatives (rappel du mapping de la section 5).
+    """
     if data is None:
         data = df
 
@@ -135,7 +164,14 @@ def show_types_donnees(data=None):
         lambda t: 'Numérique' if str(t) in ('int64', 'float64') else 'Qualitatif'
     )
 
-    fig, ax = plt.subplots(figsize=(7, 7))
+    # Rappel du mapping pour les colonnes qu'on convertit en entiers.
+    def _mapping(col):
+        if col not in ORDRE_ENCODAGE:
+            return ''
+        return ', '.join(f"{v}={i}" for i, v in enumerate(ORDRE_ENCODAGE[col]))
+    types['Encodage (str → int)'] = types['Variable'].apply(_mapping)
+
+    fig, ax = plt.subplots(figsize=(12, 7))
     ax.axis('off')
     fig.suptitle("Types des variables", fontsize=12, y=0.97)
 
@@ -163,6 +199,7 @@ def show_donnees_manquantes(data=None):
     """Vue d'ensemble : NA + aberrants côte à côte."""
     if data is None:
         data = df
+    data = _encoder_qualitatives(data)
 
     na     = data.isna().sum()
     na     = na[na > 0]
@@ -239,6 +276,7 @@ def show_aberantes(data=None):
     """Box plots + tableau des valeurs aberrantes par colonne."""
     if data is None:
         data = df
+    data = _encoder_qualitatives(data)
 
     cols   = [c for c in data.select_dtypes(include=['number']).columns
               if c not in ('id', 'outcome')]

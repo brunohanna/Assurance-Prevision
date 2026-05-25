@@ -1,9 +1,9 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.preprocessing import StandardScaler
 
-from analyses.data import df, BASE_DIR
+from analyses.data import df, BASE_DIR, ORDRE_ENCODAGE
 from analyses.section4 import _na_par_col, _ab_par_col
 
 PREPARED_PATH = os.path.join(BASE_DIR, 'src', 'car_insurance_prepared.csv')
@@ -37,27 +37,56 @@ def _preparer_donnees():
             data[col] = data[col].fillna(valeur)
             na_info[col] = (n_na, methode)
 
-    # 3. Traitement des aberrants par écrêtage IQR
-    #    On ramène les valeurs hors bornes à la borne correspondante
+    # 3. Traitement des aberrants — la méthode dépend de la nature de la colonne.
+    #    Toutes sont numériques mais pas de même type : certaines sont des
+    #    catégories codées (gender, age...), d'autres des comptages (nombre
+    #    d'infractions...), d'autres vraiment continues (credit_score).
+    #    Appliquer l'IQR partout écrase les colonnes "gonflées de zéros" : duis
+    #    a 81% de 0, donc Q1 = Q3 = 0 et tout serait ramené à 0. On adapte donc.
     cols_num = [c for c in data.select_dtypes(include=['number']).columns
                 if c != 'outcome']
     ab_info = {}
     for col in cols_num:
-        Q1, Q3 = data[col].quantile(0.25), data[col].quantile(0.75)
-        IQR = Q3 - Q1
-        b_inf, b_sup = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
-        n_ab = int(((data[col] < b_inf) | (data[col] > b_sup)).sum())
-        if n_ab > 0:
-            data[col]   = data[col].clip(lower=b_inf, upper=b_sup)
-            ab_info[col] = (n_ab, round(b_inf, 2), round(b_sup, 2))
+        serie      = data[col]
+        n_distinct = serie.nunique()
+        est_entier = bool((serie.dropna() % 1 == 0).all())
 
-    # 4. Encodage des variables qualitatives avec LabelEncoder
+        # a) Catégorie / ordinal codé : peu de modalités entières. Chaque valeur a
+        #    un sens (0/1, tranche d'âge...), on n'y touche pas.
+        if est_entier and n_distinct <= 10:
+            continue
+
+        # b) Comptage discret étalé (entier) : on rabote seulement les vraies queues
+        #    aux percentiles 1%/99% sans toucher au cœur de la distribution.
+        # c) Variable continue : écrêtage IQR classique à 1.5 * IQR.
+        if est_entier:
+            b_inf, b_sup = serie.quantile(0.01), serie.quantile(0.99)
+            methode = 'percentile 1/99'
+        else:
+            Q1, Q3 = serie.quantile(0.25), serie.quantile(0.75)
+            IQR = Q3 - Q1
+            b_inf, b_sup = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
+            methode = 'IQR 1.5x'
+
+        # Garde-fou anti-effondrement : si les deux bornes se rejoignent, écrêter
+        # transformerait la colonne en constante -> on saute.
+        if b_inf >= b_sup:
+            continue
+
+        n_ab = int(((serie < b_inf) | (serie > b_sup)).sum())
+        if n_ab > 0:
+            data[col]    = serie.clip(lower=b_inf, upper=b_sup)
+            ab_info[col] = (n_ab, round(b_inf, 2), round(b_sup, 2), methode)
+
+    # 4. Encodage des variables qualitatives selon l'ordre logique (ORDRE_ENCODAGE).
+    #    On mappe chaque catégorie vers son indice dans la liste : l'ordre ordinal
+    #    est ainsi respecté, contrairement au LabelEncoder alphabétique.
     cols_quali = data.select_dtypes(include=['object']).columns.tolist()
-    encodeurs = {}
     for col in cols_quali:
-        le = LabelEncoder()
-        data[col]   = le.fit_transform(data[col].astype(str))
-        encodeurs[col] = le
+        # Colonne non prévue : on retombe sur un ordre alphabétique par défaut.
+        ordre   = ORDRE_ENCODAGE.get(col, sorted(data[col].dropna().unique()))
+        mapping = {categorie: code for code, categorie in enumerate(ordre)}
+        data[col] = data[col].map(mapping)
 
     # 5. Normalisation StandardScaler sur toutes les variables (sauf outcome)
     cols_scale = [c for c in data.select_dtypes(include=['number']).columns
@@ -70,21 +99,15 @@ def _preparer_donnees():
 
 def _charger_ou_preparer():
     """
-    Si le fichier préparé existe déjà on le charge directement,
-    sinon on fait toutes les transformations et on le sauvegarde.
+    Prépare les données puis exporte le résultat en CSV.
+    On recalcule systématiquement (10 000 lignes, c'est instantané) : ainsi toute
+    modification de la préparation est réellement prise en compte, et le CSV reste
+    un export fidèle du dataset préparé. On évite ainsi de relire un ancien CSV
+    devenu obsolète après un changement de code.
     """
-    if os.path.exists(PREPARED_PATH):
-        import pandas as pd
-        data = pd.read_csv(PREPARED_PATH)
-        # On refait quand même les transformations pour récupérer les métadonnées
-        # (na_info, ab_info, encodeurs, scaler) — le CSV lui est déjà prêt
-        _, na_info, ab_info, cols_quali, cols_scale, scaler = _preparer_donnees()
-        return data, na_info, ab_info, cols_quali, cols_scale, scaler
-    else:
-        data, na_info, ab_info, cols_quali, cols_scale, scaler = _preparer_donnees()
-        data.to_csv(PREPARED_PATH, index=False)
-        print(f"[section5] Dataset prepare sauvegarde : {PREPARED_PATH}")
-        return data, na_info, ab_info, cols_quali, cols_scale, scaler
+    data, na_info, ab_info, cols_quali, cols_scale, scaler = _preparer_donnees()
+    data.to_csv(PREPARED_PATH, index=False)
+    return data, na_info, ab_info, cols_quali, cols_scale, scaler
 
 
 df_prepared, _na_info, _ab_info, _cols_quali, _cols_scale, _scaler = _charger_ou_preparer()
@@ -203,7 +226,7 @@ def show_traitement_aberrants():
                            boxprops=dict(facecolor='#DDDDDD', color='#555555'),
                            medianprops=dict(color='black', linewidth=2),
                            flierprops=dict(marker='o', color='#999999', markersize=4))
-        axes[0, i].set_title(col, fontsize=9)
+        axes[0, i].set_title(f"{col}\n({_ab_info[col][3]})", fontsize=9)
         axes[0, i].set_xticks([])
 
         axes[1, i].boxplot(df_prepared[col].dropna(), patch_artist=True,
@@ -222,20 +245,17 @@ def show_traitement_aberrants():
 def show_encodage():
     """
     Tableau des variables qualitatives encodées :
-    colonne, valeurs originales → valeurs numériques.
+    colonne, valeurs originales → code numérique, dans l'ordre logique choisi.
     """
     lignes = []
-    for col, le in _encodeurs_export().items():
-        classes = le.classes_
-        # On affiche les 4 premières classes pour ne pas surcharger
-        apercu = ', '.join(f"'{v}' → {i}" for i, v in enumerate(classes[:4]))
-        if len(classes) > 4:
-            apercu += ', ...'
-        lignes.append([col, len(classes), apercu])
+    for col in _cols_quali:
+        ordre  = ORDRE_ENCODAGE.get(col, sorted(df[col].dropna().unique()))
+        apercu = ', '.join(f"'{v}' → {i}" for i, v in enumerate(ordre))
+        lignes.append([col, len(ordre), apercu])
 
     _tableau_matplotlib(
-        "Encodage des variables qualitatives (LabelEncoder)",
-        ["Colonne", "Nb classes", "Mapping (extrait)"],
+        "Encodage ordinal des variables qualitatives",
+        ["Colonne", "Nb classes", "Mapping (ordre logique)"],
         lignes
     )
     plt.show()
@@ -305,20 +325,6 @@ def show_donnees_preparees():
 
     plt.tight_layout()
     plt.show()
-
-
-# ── Helper interne pour l'encodage ───────────────────────────────────────────
-
-def _encodeurs_export():
-    """Retourne le dict encodeur depuis la closure de _preparer_donnees."""
-    # On réexécute juste l'encodage pour récupérer les objets LabelEncoder
-    encodeurs = {}
-    data_tmp = df.drop(columns=['id'])
-    for col in data_tmp.select_dtypes(include=['object']).columns:
-        le = LabelEncoder()
-        le.fit(data_tmp[col].dropna().astype(str))
-        encodeurs[col] = le
-    return encodeurs
 
 
 def get_info_section5():

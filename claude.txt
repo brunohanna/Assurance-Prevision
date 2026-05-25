@@ -1,0 +1,207 @@
+═══════════════════════════════════════════════════════════════════════════════
+  NOTES PROJET — Assurance Prévision (Science des données 2023)
+═══════════════════════════════════════════════════════════════════════════════
+
+OBJECTIF GLOBAL
+───────────────
+Classification supervisée binaire sur le jeu `car_insurance.csv` :
+prédire la variable `outcome` (0 = pas de sinistre, 1 = sinistre déclaré).
+Suivre les 10 étapes du PDF `src/projet_2023.pdf` (sections 3 à 12).
+
+
+CONSIGNES DE CODE (à respecter dans tout nouveau fichier)
+─────────────────────────────────────────────────────────
+- Code lisible avant tout. Pas de fonctions monstre, on découpe.
+- Style "étudiant qui code bien" : commentaires en français, naturels,
+  on explique le pourquoi quand c'est utile, pas le quoi évident.
+- Pas de tournures de robot ("In this function we will..."), pas d'emoji.
+- Rangement clair : un fichier = une étape du projet (section6.py, etc.).
+- Réutiliser le DataFrame préparé via `analyses.section5.df_prepared`
+  au lieu de refaire les transformations.
+- Garder la même charte graphique tkinter/matplotlib que sections 4 et 5
+  (palette monochrome + accents colorés, tableaux _tableau_matplotlib).
+- Pas de print() de debug qui traînent.
+
+
+ÉTAT D'AVANCEMENT
+═════════════════════════════════════════════════════════════════════════════
+
+[✓] Section 3 — Importation des données
+    └── analyses/data.py : read_csv vers DataFrame `df`.
+        Chemin construit relativement à BASE_DIR (robuste à l'endroit
+        d'exécution).
+
+[✓] Section 4 — Examen des données
+    └── analyses/section4.py
+        IMPORTANT : la section 4 convertit les 5 colonnes texte en int via
+        _encoder_qualitatives() (mapping ORDRE_ENCODAGE, partagé avec section 5),
+        et travaille sur df_num. Ainsi les 17 variables sont examinées (avant, les
+        5 str étaient ignorées par les graphes "numériques only"). No-op sur le
+        dataset préparé. Conséquence : AB_COUNT 3273 -> 3750 (vehicle_type ajoute
+        477 aberrants "naïfs", même cas que duis ; corrigé proprement en section 5).
+        • show_histogrammes()       → distribution des 16 variables, empilée par outcome.
+          Mise en page : constrained_layout=True (sinon les titres se chevauchaient).
+        • show_types_donnees()      → tableau Variable / Type / Catégorie + colonne
+          "Encodage (str → int)" qui rappelle le mapping des 5 qualitatives
+        • show_donnees_manquantes() → vue d'ensemble NA + aberrants
+        • show_na()                 → détail NA par colonne
+        • show_aberantes()          → boxplots + tableau IQR
+        • get_info_dataset()        → infos pour les cartes de l'UI
+        Détection des aberrants par méthode IQR (Q1-1.5·IQR, Q3+1.5·IQR).
+
+[✓] Section 5 — Préparation des données
+    └── analyses/section5.py
+        • Suppression de `id` (identifiant inutile)
+        • NA : médiane (numérique) / mode (qualitatif), via fillna
+        • Aberrants : écrêtage par bornes IQR (clip)
+        • Encodage : ORDINAL EXPLICITE (dict ORDRE_ENCODAGE, défini dans data.py et
+          partagé avec section 4) et non LabelEncoder. LabelEncoder code par ordre
+          alphabétique → faux pour les ordinales (education 'none' aurait valu 1 au
+          lieu de 0). On fixe l'ordre logique de chaque colonne.
+          Binaires : sedan=0/sports car=1, before 2015=0/after=1.
+        • Normalisation : StandardScaler sur toutes les colonnes num. sauf outcome
+        • Cache du résultat dans src/car_insurance_prepared.csv
+
+[✓] Interface tkinter (toutes les sections)
+    └── interface.py : un onglet par section 4 à 12. Section 4 = sélecteur
+        original/préparé, section 7 = slider test_size, le reste = gabarit
+        générique _construire_onglet_simple (boutons + cartes d'info).
+
+
+[✓] Section 6 — Recherche de corrélations
+    └── analyses/section6.py
+        • show_heatmap_correlations() → imshow RdBu_r de df_prepared.corr(),
+          annotée seulement si |corr| >= 0.05 (lisibilité).
+        • show_correlations_outcome() → barres triées des corr avec outcome.
+        • show_scatter_matrix()       → scatter_matrix des 5 variables les plus
+          corrélées à outcome, points colorés par classe.
+        Onglet câblé via _construire_onglet_simple.
+        Top corr / outcome : driving_experience -0.50, age -0.45,
+        vehicle_ownership -0.38, speeding -0.33, past_accidents -0.33.
+
+[✓] Section 7 — Jeux d'apprentissage et de test
+    └── analyses/section7.py
+        • decouper(test_size, random_state=42) → train_test_split stratifié.
+        • compter(test_size) → tailles rapides pour rafraîchir les cartes.
+        • Expose X_train, X_test, y_train, y_test, NOMS_FEATURES (réutilisés §8+).
+        Onglet dédié AVEC SLIDER test_size (pas le gabarit simple) : cartes
+        train/test/% qui se mettent à jour en direct + bouton "Ré-entraîner tout
+        le pipeline avec cette proportion (§7 → §12)". CE BOUTON N'OUVRE PLUS DE
+        FENÊTRE matplotlib : il appelle s7.reentrainer(test_size) puis, DANS
+        L'ORDRE, s8→s9→s10→s11→s12.reentrainer(), rafraîchit les cartes de TOUS
+        les onglets (_rafraichisseurs) et affiche un résumé (train/test/CV/best)
+        dans un label. Les graphes des autres onglets reflètent le nouvel état à
+        la prochaine ouverture. Défaut 80/20, seed 42.
+        reentrainer(test_size) (s7) rebind le split COURANT X_train/X_test/...
+        ; les sections 8-12 lisent ce split via `import analyses.section7 as s7`
+        (et non par copie) pour suivre le changement.
+        (show_repartition retirée ; accuracy_train/calculer_cv remplacés par les
+        reentrainer().)
+
+[✓] Section 8 — Entraînement régression logistique
+    └── analyses/section8.py
+        • modele_logit = LogisticRegression(max_iter=1000, random_state=42).fit(...)
+        • show_coefficients() → poids w triés par |valeur|, biais + acc train du
+          modèle COURANT (lit POIDS/BIAIS/SCORE_TRAIN, reflète le dernier split §7).
+        • reentrainer() → réentraîne modele_logit sur s7.X_train courant et met à
+          jour POIDS/BIAIS/SCORE_TRAIN. Toutes les sections 8-12 ont ce reentrainer().
+        Les 3 réponses théoriques du PDF §8 restent en commentaire (section8.py:14-26).
+        Le bouton "Principes de l'algorithme" a été retiré (sans intérêt en UI).
+        Résultats : acc train ≈ 0.847, biais ≈ -1.689, var. la + influente =
+        driving_experience (poids ≈ -1.76).
+
+[✓] Section 9 — Évaluation du modèle
+    └── analyses/section9.py
+        • predict() de modele_logit sur X_test (jeu jamais vu).
+        • show_matrice_confusion() → heatmap 2x2 annotée.
+        • show_metriques()         → barres accuracy/précision/rappel/f1.
+        Résultats (test) : accuracy 0.835, précision 0.739, rappel 0.732, f1 0.736.
+        Matrice : TN=1211, FP=162, FN=168, TP=459.
+
+[✓] Section 10 — Validation croisée
+    └── analyses/section10.py
+        • KFold(5, shuffle=True, random_state=42) + cross_val_score (accuracy).
+        • show_scores_cv() → barres des 5 plis + moyenne + repère éval simple §9.
+        • reentrainer() → recalcule SCORES/CV_MOYENNE/CV_ECART sur s7.X_train
+          courant (suit le slider §7). show_scores_cv lit s9.ACCURACY en direct.
+        Résultats : moyenne CV ≈ 0.846 ± 0.007 (proche de l'éval simple 0.835,
+        donc le modèle est stable, pas de découpe "chanceuse").
+
+[✓] Section 11 — Comparaison d'algorithmes
+    └── analyses/section11.py
+        • LogisticRegression vs Perceptron vs KNN (k=3,5,7,11), même CV 5 plis.
+        • RESULTATS = {nom: (moyenne, écart-type)}. MEILLEUR_NOM / MEILLEUR_SCORE
+          exposés (réutilisés en §12).
+        • show_comparaison() → barres horizontales triées + barre d'erreur.
+        Résultats : régression logistique gagne (0.846), puis KNN k=11 (0.830),
+        Perceptron dernier (0.768).
+
+[✓] Section 12 — Sauvegarde du meilleur modèle
+    └── analyses/section12.py
+        • Recrée le meilleur modèle (§11) depuis son nom, réentraîne sur X_train,
+          pickle.dump dans modele.pkl (à la racine, déjà dans .gitignore).
+        • verifier() : pickle.load + predict sur 5 échantillons → identique.
+        • bilan_texte() → renvoie (ok, texte). L'onglet (build_tab_section12, sur
+          mesure) AFFICHE ce texte dans un Label tkinter, PAS dans une fenêtre
+          matplotlib (pas de plt dans cette section).
+        Meilleur sauvé : régression logistique (acc CV 0.846), vérification OK.
+
+
+RAPPORT FINAL (à ne pas oublier)
+────────────────────────────────
+Le carnet de bord détaillé est dans rapport.txt (ce qu'on a fait, les retours
+en arrière, le pourquoi, fichier:ligne). Le rapport.txt couvre §3 à §12.
+Quand on code une nouvelle section, AJOUTER son entrée dans rapport.txt et
+mettre ce claude.txt à jour (cases [ ] → [✓]).
+TOUTES les sections (3 à 12) sont codées ET le compte-rendu propre est rédigé
+(voir dossier rapport/, plus bas).
+Le PDF demande aussi un rapport clair et concis (compte-rendu d'étude)
+qui répond aux questions de chaque section :
+  • Section 3 : objectif du problème de classification (prédire `outcome`)
+  • Section 4 : observations sur les distributions, NA, aberrants
+  • Section 6 : signification d'un coefficient de corrélation, variables
+                les plus pertinentes
+  • Section 7 : proportions train/test choisies
+  • Section 8 : hypothèse logit, minimisation, paramètres appris
+  • Section 9 : signification des métriques + analyse
+  • Section 10 : comparaison avec/sans validation croisée
+  • Section 11 : commentaire sur le meilleur algo / hyperparamètres
+  • Section 12 : sauvegarde du meilleur modèle + vérification du rechargement
+À placer dans un rapport.md ou rapport.pdf séparé (base = rapport.txt).
+
+[✓] RAPPORT FINAL rédigé → dossier rapport/
+    └── rapport/rapport.tex : compte-rendu SCIENTIFIQUE pour Overleaf (prose pédagogique,
+        PAS de code/listings sur demande de l'étudiant). Classe MAISON
+        \documentclass{iut} + \usepackage{macros} (l'étudiant fournit iut.cls + macros.sty
+        + img_use/LogoEntreprise.pdf sur Overleaf). Page de titre via \ThesisTitle...,
+        \MakeThesisTitlePage, \mainmatter, \SpecialSection (Intro/Conclusion), \chapter
+        thématiques (titres descriptifs, pas "section N"). Explique chaque concept et les
+        DIFFÉRENCES entre concepts (moyenne/médiane, supprimer/écrêter, ordinal/nominal,
+        précision/rappel, train/test, les 3 algos...). Schémas dessinés en TikZ/pgfplots
+        (pipeline, "garbage in/out", anatomie IQR, corrélation +/−/0, découpe train/test,
+        sigmoïde, matrice de confusion, k-fold, KNN). Encadrés via la commande \encadre.
+        Figures de l'app insérées avec largeurs ajustées ; scatter_matrix retirée (illisible
+        sur variables discrètes). NB : nécessite tikz + pgfplots (compat=1.18) +
+        decorations.pathreplacing sur Overleaf.
+    └── rapport/generer_figures.py : régénère les 10 PNG de rapport/img_use/ en
+        réutilisant les show_xxx() des sections (monkeypatch de plt.show → savefig,
+        backend Agg). Lancer depuis la racine : .venv/bin/python rapport/generer_figures.py
+        IMPORTANT : les images vont dans rapport/img_use/ (et non img/) ; le .tex pose
+        \graphicspath{{img_use/}} donc les \includegraphics utilisent le nom de fichier nu.
+
+
+POINTS D'ATTENTION REPÉRÉS
+──────────────────────────
+- [RÉSOLU] La dette `_encodeurs_export()` (refit des LabelEncoder pour l'affichage)
+  a disparu : l'encodage est maintenant un simple dict ORDRE_ENCODAGE lu
+  directement par show_encodage(). LabelEncoder n'est plus importé.
+- [RÉSOLU] Le cache _charger_ou_preparer() masquait les corrections : on
+  recalcule maintenant toujours et on réécrit le CSV à chaque fois (10 000
+  lignes = instantané). Voir rapport.txt "RETOUR EN ARRIÈRE n°2".
+- [RÉSOLU] random_state=42 est en place partout où il y a de l'aléatoire
+  (train_test_split §7, LogisticRegression §8, KFold §10/§11, Perceptron §11).
+- [RÉSOLU / leçon] L'écrêtage IQR aveugle effondrait des colonnes (duis →
+  tout 0). Remplacé par un écrêtage ADAPTATIF par type de colonne. C'est le
+  gros retour en arrière n°1, détaillé dans rapport.txt section 5.
+
+═══════════════════════════════════════════════════════════════════════════════

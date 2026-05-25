@@ -1,0 +1,579 @@
+═══════════════════════════════════════════════════════════════════════════════
+  RAPPORT DE TRAVAIL — Assurance Prévision (Projet Science des données 2023)
+  Notes de travail destinées à rédiger le rapport final, sans rien oublier.
+═══════════════════════════════════════════════════════════════════════════════
+
+Ce document n'est PAS le rapport final. C'est le carnet de bord : ce qu'on a fait,
+comment c'est codé (avec renvois fichier:ligne), ce qu'on a observé, les retours
+en arrière qu'on a dû faire, les solutions choisies, leurs conséquences et le
+pourquoi. À partir d'ici, écrire le compte-rendu propre demandé par le PDF est
+juste une mise en forme.
+
+
+───────────────────────────────────────────────────────────────────────────────
+0. OBJECTIF GLOBAL ET DONNÉES
+───────────────────────────────────────────────────────────────────────────────
+
+But : classification supervisée BINAIRE sur `src/car_insurance.csv`.
+On veut prédire la variable `outcome` :
+    outcome = 0  → pas de sinistre
+    outcome = 1  → sinistre déclaré
+
+Le PDF (src/projet_2023.pdf) impose 10 étapes (sections 3 à 12). On suit l'ordre.
+Le but du PDF n'est pas le jeu de données lui-même mais de pratiquer LA DÉMARCHE
+type d'un projet de data science : comprendre → préparer → entraîner → évaluer →
+comparer → sauvegarder.
+
+Données brutes :
+  - 10 000 lignes, 18 colonnes au départ.
+  - Colonnes : id, age, gender, driving_experience, education, income,
+    credit_score, vehicle_ownership, vehicle_year, married, children,
+    postal_code, annual_mileage, vehicle_type, speeding_violations, duis,
+    past_accidents, outcome.
+  - Cible = outcome. Répartition des classes ≈ 69 % de 0 / 31 % de 1 (déséquilibré).
+  - `id` est un identifiant → inutile pour la classification, supprimé en section 5.
+
+
+───────────────────────────────────────────────────────────────────────────────
+0bis. ARCHITECTURE DU CODE (comment le projet est rangé)
+───────────────────────────────────────────────────────────────────────────────
+
+Principe : UN fichier = UNE étape du projet. Chaque module fait ses calculs UNE
+fois à l'import (variables de module), puis expose :
+  - des fonctions show_xxx() ouvertes par les boutons (chacune trace une figure
+    matplotlib),
+  - une fonction get_info_sectionN() qui renvoie les chiffres des "cartes" de l'UI.
+
+  analyses/data.py      → import du CSV (section 3). Construit BASE_DIR de façon
+                          robuste (os.path.dirname x2) pour que ça marche quel que
+                          soit le dossier d'exécution. data.py:5-8. Contient aussi
+                          ORDRE_ENCODAGE (mapping str->int des qualitatives), placé
+                          ici car partagé par les sections 4 ET 5 (évite l'import
+                          circulaire et la duplication).
+  analyses/section4.py  → examen des données (histogrammes, types, NA, aberrants).
+                          Convertit d'abord les 5 colonnes texte en int
+                          (_encoder_qualitatives) pour examiner les 17 variables.
+  analyses/section5.py  → préparation (nettoyage, encodage, normalisation).
+  analyses/section6.py  → corrélations (heatmap, corr avec outcome, scatter matrix).
+  analyses/section7.py  → découpe train/test.
+  analyses/section8.py  → entraînement régression logistique.
+  interface.py          → IHM tkinter, un onglet par section.
+  main.py               → point d'entrée (lance l'interface).
+
+Chaînage des dépendances (important à comprendre) :
+  data.df → section4 (lecture seule de df)
+          → section5.df_prepared (LE dataframe nettoyé, réutilisé partout)
+              → section6 (corr sur df_prepared)
+              → section7 (X/y depuis df_prepared, split)
+                  → section8 (modèle sur X_train/y_train)
+
+Donc TOUTE correction faite en section 5 se propage automatiquement en 6/7/8.
+C'est voulu (consigne PDF : réutiliser le code des étapes précédentes).
+
+Charte graphique (interface.py) : palette monochrome (gris/blanc) + accents de
+couleur, boutons pleine largeur, cartes de stats cliquables, tableaux via le
+helper _tableau_matplotlib. Sections 6/7/8 partagent le même gabarit d'onglet
+générique _construire_onglet_simple (interface.py:239) car elles ont la même
+structure simple (boutons + cartes).
+
+
+───────────────────────────────────────────────────────────────────────────────
+SECTION 3 — IMPORTATION DES DONNÉES
+───────────────────────────────────────────────────────────────────────────────
+But (PDF) : importer le CSV avec pandas read_csv, vérifier l'import, identifier
+les variables d'entrée et la variable de sortie (étiquette de classe).
+
+Ce qu'on a fait / code : analyses/data.py
+  df = pd.read_csv(CSV_PATH)  — 3 lignes utiles.
+  Chemin construit relativement au fichier (pas de chemin absolu en dur) pour la
+  portabilité.
+
+Appris / à dire dans le rapport :
+  - Variable de sortie = outcome (binaire). Variables d'entrée = les 16 autres
+    (après suppression d'id). Objectif = prédire outcome.
+
+
+───────────────────────────────────────────────────────────────────────────────
+SECTION 4 — EXAMEN DES DONNÉES
+───────────────────────────────────────────────────────────────────────────────
+But (PDF) : comprendre taille, types, qualité (NA + aberrants), distributions.
+
+Ce qu'on a fait / code : analyses/section4.py
+  - show_types_donnees()      → tableau Variable / Type / Numérique|Qualitatif.
+  - show_histogrammes()       → un histogramme par variable numérique, EMPILÉ par
+                                classe (vert=0, rouge=1) pour voir visuellement
+                                quelles variables séparent les classes. section4.py:80
+                                Astuce : pour les comptages (children, duis...) on
+                                regroupe la queue avec clip(upper=m) + bins entiers
+                                (COUNT_COLS_LIMITS, section4.py:85) sinon l'histo est
+                                illisible (une barre énorme à 0 et des miettes).
+  - show_na()                 → tableau détaillé NA (count, cumul, %).
+  - show_aberantes()          → boxplots + tableau des aberrants détectés par IQR.
+  - _compter_aberrants_par_col() : méthode IQR, aberrant = hors de
+    [Q1 - 1.5·IQR, Q3 + 1.5·IQR].
+
+  CONVERSION str -> int dès la section 4 (_encoder_qualitatives) :
+    Au départ, les graphes "numériques only" laissaient de côté les 5 colonnes
+    texte (driving_experience, education, income, vehicle_year, vehicle_type) :
+    on n'examinait que ~11 variables sur 17. On les convertit donc en int (même
+    mapping ORDRE_ENCODAGE que la section 5) pour examiner TOUTES les variables.
+    Conséquence chiffrée : la détection naïve d'aberrants passe de 3273 à 3750.
+    Le +477 vient de vehicle_type (95% sedan / 5% sports car) : son IQR vaut 0
+    (Q1=Q3=0), donc les 477 sports cars sont flaguées "aberrantes". C'est le même
+    artefact que duis (1882) ou postal_code (484) : la détection IQR naïve n'a pas
+    de sens sur une catégorielle déséquilibrée. C'est VOULU ici : la section 4
+    montre la vue brute ; la section 5 corrige proprement (écrêtage adaptatif qui
+    NE touche PAS aux catégorielles). À dire dans le rapport pour ne pas présenter
+    ces 477 comme de vraies anomalies.
+
+Détail technique utile : les fonctions section4 acceptent un argument `data`
+optionnel. Quand l'UI bascule sur "données préparées" (radio bouton), on leur passe
+df_prepared pour comparer AVANT/APRÈS dans les mêmes graphes. interface.py:106-110
+
+Appris / observations (à mettre dans le rapport) :
+  - 2 colonnes ont des NA :
+        credit_score   → 982 NA (≈ 9,8 %)
+        annual_mileage → 957 NA (≈ 9,6 %)
+    Total ≈ 1939 NA. Bien en dessous du "tiers" → on NE supprime PAS, on impute.
+  - Aberrants détectés par IQR surtout sur credit_score, annual_mileage,
+    speeding_violations, past_accidents.
+  - Beaucoup de "variables numériques" sont en réalité des CATÉGORIES codées
+    (age en 4 tranches, gender 0/1, postal_code 4 zones) ou des COMPTAGES
+    (duis, speeding_violations, past_accidents). Cette distinction sera CAPITALE
+    en section 5 (voir le gros retour en arrière plus bas).
+  - duis est très "gonflé de zéros" : ~81 % des conducteurs à 0.
+
+
+───────────────────────────────────────────────────────────────────────────────
+SECTION 5 — PRÉPARATION DES DONNÉES   ⚠ section avec le gros retour en arrière
+───────────────────────────────────────────────────────────────────────────────
+But (PDF) : données 100 % numériques et "propres" (sans NA ni aberrants), à la
+même échelle. 4 sous-étapes : NA, aberrants, encodage, normalisation.
+
+Ce qu'on a fait / code : analyses/section5.py, fonction _preparer_donnees()
+  1. Suppression de `id`.                                       section5.py:22
+  2. NA :
+       - numérique  → remplacement par la MÉDIANE (robuste aux extrêmes,
+                      meilleur que la moyenne ici).
+       - qualitatif → remplacement par le MODE (valeur la plus fréquente).
+     Imputé : credit_score (médiane 0.53), annual_mileage (médiane 12000).
+  3. Aberrants → écrêtage (clip) ADAPTATIF selon le type de colonne. section5.py:40
+  4. Encodage ORDINAL EXPLICITE des qualitatives (dict ORDRE_ENCODAGE, dans data.py).
+       5 colonnes encodées : driving_experience, education, income, vehicle_year,
+       vehicle_type. On mappe chaque catégorie vers son indice dans une liste
+       qu'on a ordonnée à la main (voir bloc dédié plus bas).
+  5. Normalisation StandardScaler sur toutes les numériques sauf outcome
+       (16 colonnes). Met tout à moyenne 0 / écart-type 1.       section5.py:62
+
+Résultat : df_prepared = 10 000 lignes × 17 colonnes, 100 % numérique, sans NA,
+exporté dans src/car_insurance_prepared.csv.
+
+═══ RETOUR EN ARRIÈRE n°1 (le plus important) : l'écrêtage IQR détruisait des
+    colonnes entières ═══
+
+  Symptôme observé : sur la heatmap de corrélation (section 6), la ligne/colonne
+  `duis` était entièrement VIDE, et après préparation `duis` ne contenait plus
+  que des 0. Une variable qui avait du sens au départ devenait une colonne
+  constante et inutile.
+
+  Cause (diagnostiquée sur les données) :
+    La première version appliquait l'écrêtage IQR (Q1-1.5·IQR, Q3+1.5·IQR) À
+    TOUTES les colonnes numériques sans distinction. Or duis a ~81 % de zéros :
+        Q1 = 0 et Q3 = 0  →  IQR = 0  →  bornes = [0, 0]
+        clip(0, 0) ramène TOUTES les valeurs non nulles (1882 personnes ayant eu
+        un DUI) à 0. La colonne devient constante.
+    C'est le défaut classique de l'IQR sur une variable de comptage "gonflée de
+    zéros". Conséquence en cascade : variance nulle → corrélation de Pearson
+    indéfinie (division par 0) → NaN → case vide dans la heatmap, et poids ≈ 0
+    dans la régression logistique. Le même mécanisme rabotait aussi
+    speeding_violations et past_accidents à un plafond trop bas (≤ 5), écrasant
+    la queue (or un conducteur à beaucoup d'infractions est justement le plus
+    intéressant pour un assureur).
+
+  Solution choisie : écrêtage ADAPTATIF, une technique par TYPE de colonne
+  (section5.py:40-79) :
+    a) Catégorie / ordinal codé (entier, ≤ 10 modalités distinctes)
+         → AUCUN écrêtage. Chaque valeur a un sens (0/1, tranche d'âge...).
+         → concerne age, gender, vehicle_ownership, married, children,
+           postal_code, ET duis (7 modalités).
+    b) Comptage discret étalé (entier, > 10 modalités)
+         → winsorisation DOUCE aux percentiles 1 % / 99 % : on ne rabote que les
+           vraies queues extrêmes, sans toucher au cœur de la distribution.
+         → annual_mileage (bornes 5000–18000), speeding_violations (0–10),
+           past_accidents (0–7).
+    c) Variable continue (non entière)
+         → écrêtage IQR 1.5× classique. → credit_score (bornes 0.17–0.87).
+    + GARDE-FOU universel : si b_inf >= b_sup, on saute (jamais d'écrêtage qui
+      collerait les deux bornes → plus jamais de colonne effondrée). section5.py:72
+
+  Conséquence (vérifiée) :
+    - Plus aucune colonne constante.
+    - duis préservé : 7 valeurs distinctes, corrélation réelle avec outcome
+      = -0.189 (réapparaît dans la heatmap, le tableau de corrélations et les
+      coefficients du modèle).
+    - speeding_violations / past_accidents gardent leur queue (10 / 7 au lieu de 5).
+  Aberrants finalement traités : credit_score 57 (IQR), annual_mileage 105,
+  speeding_violations 91, past_accidents 80 (les 3 derniers en percentile 1/99).
+
+  Pourquoi c'est la bonne décision : l'objectif de l'étape "aberrants" est de
+  LIMITER les points trop excentrés, pas de RÉÉCRIRE la distribution. L'IQR
+  aveugle faisait le second. La méthode par type respecte le sens des données.
+
+═══ RETOUR EN ARRIÈRE n°2 : un cache masquait les corrections ═══
+
+  La première version de _charger_ou_preparer() relisait directement
+  src/car_insurance_prepared.csv s'il existait — tout en recalculant quand même
+  TOUT pour récupérer les métadonnées. Donc : aucun gain de vitesse, mais un vrai
+  piège : après une correction du code de préparation, l'ancien CSV obsolète
+  était rechargé et la correction restait INVISIBLE.
+
+  Solution : on recalcule toujours (10 000 lignes = instantané) et on réécrit le
+  CSV à chaque fois. section5.py:71. Le CSV redevient un simple export fidèle, et
+  toute modif du code prend effet immédiatement.
+
+═══ COMPRENDRE LA NORMALISATION (expliqué simplement, sans prérequis) ═══
+
+  Après préparation, on remarque deux choses qui surprennent : les colonnes sont
+  "centrées autour de 0", et certaines valeurs (comme duis) deviennent NÉGATIVES.
+  Voici pourquoi, en partant de zéro.
+
+  C'est quoi normaliser (StandardScaler) ?
+    Les variables n'ont pas les mêmes unités : annual_mileage se compte en milliers
+    de km, gender vaut 0 ou 1, age est une petite tranche. Si on laisse comme ça,
+    l'algorithme croit que annual_mileage (avec ses gros chiffres) est "plus
+    important" juste parce que ses nombres sont gros. Injuste.
+    Pour rétablir l'égalité, on met toutes les colonnes sur la MÊME règle graduée
+    avec cette formule, appliquée à chaque valeur d'une colonne :
+
+         valeur normalisée = (valeur − moyenne de la colonne) / écart-type
+
+    - "moyenne" = la valeur typique de la colonne.
+    - "écart-type" = de combien les valeurs s'éloignent en général de la moyenne.
+
+  Pourquoi tout est centré à 0 ?
+    Parce qu'on SOUSTRAIT la moyenne à chaque valeur. Du coup la nouvelle moyenne
+    de la colonne devient forcément 0, et l'écart-type devient 1. Toutes les
+    colonnes finissent avec la même "taille". Une valeur normalisée se lit alors :
+        = 0   → la personne est dans la moyenne pour cette variable
+        > 0   → au-dessus de la moyenne
+        < 0   → en-dessous de la moyenne
+    Donc un nombre négatif ne veut PAS dire un nombre négatif de quoi que ce soit.
+    Il veut juste dire "en-dessous de la moyenne".
+
+  L'exemple de duis (pourquoi il part dans les négatifs) :
+    Au départ, 81 % des gens ont 0 DUI, et une minorité en a 1, 2, 3...
+    Cette minorité tire la moyenne vers le haut : moyenne de duis ≈ 0,24
+    (alors que la valeur la plus fréquente est 0). L'écart-type ≈ 0,55.
+    On applique la formule :
+        duis = 0  →  (0 − 0,24) / 0,55 = −0,43   ← les 81 % à 0 passent en négatif
+        duis = 1  →  (1 − 0,24) / 0,55 = +1,37
+        duis = 2  →  (2 − 0,24) / 0,55 = +3,17
+        duis = 3  →  (3 − 0,24) / 0,55 = +4,98
+    Conclusion : les gens à 0 DUI sont SOUS la moyenne (0,24), donc leur valeur
+    normalisée est négative (−0,43). C'est mécanique et parfaitement normal.
+
+  Et la forme "décalée" du graphe ?
+    La normalisation change l'ÉCHELLE, pas la FORME. duis reste très asymétrique
+    (un gros pic à 0, une longue traîne vers le haut). Après centrage, le centre 0
+    se cale sur la MOYENNE, pas sur le pic. C'est pourquoi le gros pic se retrouve
+    un peu à gauche de 0 (à −0,43) avec une traîne qui s'étire vers la droite.
+    Rien d'anormal : c'est le portrait fidèle d'une variable de comptage.
+
+═══ CHOIX D'ENCODAGE : ordinal explicite plutôt que LabelEncoder ═══
+
+  Problème de LabelEncoder : il code les catégories par ordre ALPHABÉTIQUE.
+  Pour des variables ORDINALES (qui ont un ordre naturel), ça donne n'importe
+  quoi. Exemples concrets observés :
+    education : alphabétique → high school=0, none=1, university=2
+                (absurde : 'none' devrait être le plus bas, donc 0)
+    income    : alphabétique → middle=0, poverty=1, upper=2, working=3
+                (aucun rapport avec le niveau de revenu réel)
+  Comme on normalise ensuite et qu'on entraîne un modèle linéaire, un mauvais
+  ordre brouille la relation entre la variable et outcome.
+
+  Solution : on fixe nous-mêmes l'ordre logique de chaque colonne dans le dict
+  ORDRE_ENCODAGE (défini dans data.py, partagé avec la section 4). L'indice = le code.
+    driving_experience : 0-9y=0, 10-19y=1, 20-29y=2, 30y+=3
+    education          : none=0, high school=1, university=2
+    income             : poverty=0, working class=1, middle class=2, upper class=3
+    vehicle_year       : before 2015=0, after 2015=1   (chronologique)
+    vehicle_type       : sedan=0, sports car=1         (binaire, sens choisi)
+  Garde-fou : une colonne non prévue retombe sur un tri alphabétique par défaut.
+
+  Conséquence : pour driving_experience l'ordre était déjà bon par chance
+  (l'alphabet coïncidait), mais education, income et vehicle_year sont corrigés.
+  Effet mesuré faible sur l'accuracy (0.848 → 0.847) car ces variables sont
+  secondaires, mais le modèle et les corrélations ont maintenant un SENS lisible.
+
+  Bonus : cette refonte a supprimé la dette _encodeurs_export() (qui refaisait un
+  fit de LabelEncoder juste pour afficher le mapping). show_encodage() lit
+  désormais directement ORDRE_ENCODAGE. LabelEncoder n'est plus importé du tout.
+
+Appris / à dire dans le rapport (questions implicites du PDF §5) :
+  - NA imputés par médiane/mode car < 1/3 des données (sinon on aurait supprimé).
+  - Encodage ORDINAL : on a choisi l'ordre logique de chaque catégorie au lieu de
+    laisser LabelEncoder trier par ordre alphabétique (qui n'a pas de sens ici).
+  - Normalisation StandardScaler car les algos marchent mal quand les échelles
+    diffèrent (ex. annual_mileage en milliers vs gender en 0/1).
+  - LEÇON forte : ne jamais appliquer une recette de nettoyage aveuglément ;
+    adapter au type réel de chaque variable.
+
+
+───────────────────────────────────────────────────────────────────────────────
+SECTION 6 — RECHERCHE DE CORRÉLATIONS
+───────────────────────────────────────────────────────────────────────────────
+But (PDF) : rappeler ce qu'est un coefficient de corrélation ; quelles variables
+sont les plus corrélées entre elles et avec outcome ; lesquelles sont les plus
+pertinentes pour la classification ; visualiser via scatter_matrix.
+
+Ce qu'on a fait / code : analyses/section6.py
+  - _matrice_corr = df_prepared.corr() (Pearson).               section6.py:14
+  - show_heatmap_correlations() : imshow + colorbar, palette divergente
+    RdBu_r (bleu = négatif, rouge = positif). On n'écrit le chiffre que si
+    |corr| >= 0.05 pour ne pas surcharger (choix esthétique). section6.py:49
+  - show_correlations_outcome() : barres horizontales triées de la corrélation
+    de chaque variable avec outcome.
+  - show_scatter_matrix() : scatter_matrix sur les 5 variables les plus corrélées
+    à outcome, points colorés par classe.
+
+Note de lecture de la heatmap (utile car on s'est posé la question) :
+  - Une case complètement vide (pas même la diagonale) = corrélation NaN = colonne
+    constante. C'était le cas de duis AVANT le fix section 5. Après fix : réglé.
+  - Une case vide AVEC une couleur claire = |corr| < 0.05, juste masquée par le
+    seuil d'annotation (section6.py:49), pas un problème.
+
+Appris / observations (à mettre dans le rapport, §6) :
+  - Coefficient de corrélation = mesure de relation LINÉAIRE entre 2 variables,
+    entre -1 et +1 (0 = pas de relation linéaire). Pearson ici.
+  - Variables les plus corrélées à outcome (donc les plus prédictives) :
+        driving_experience  -0.497   (plus d'expérience → moins de sinistre)
+        age                 -0.448
+        vehicle_ownership   -0.379
+        speeding_violations -0.332
+        past_accidents      -0.331
+        credit_score        -0.309
+  - Corrélations FORTES entre variables d'entrée (multicolinéarité, à signaler) :
+        age ↔ driving_experience ≈ 0.71
+        driving_experience ↔ speeding_violations ≈ 0.69
+    → ces variables se "répètent" partiellement, ce qui explique que dans la
+      régression (section 8) certains poids redistribuent l'importance.
+
+
+───────────────────────────────────────────────────────────────────────────────
+SECTION 7 — JEUX D'APPRENTISSAGE ET DE TEST
+───────────────────────────────────────────────────────────────────────────────
+But (PDF) : créer un jeu d'entraînement et un jeu de test ; préciser les
+proportions choisies.
+
+Ce qu'on a fait / code : analyses/section7.py
+  - X = df_prepared sans outcome, y = outcome (en tableaux numpy). section7.py:13
+  - train_test_split(test_size=0.2, random_state=42, stratify=y). section7.py:19
+  - Expose X_train, X_test, y_train, y_test, NOMS_FEATURES (réutilisés en §8+).
+  - L'onglet montre les tailles train/test et la proportion de classes dans des
+    cartes qui se mettent à jour quand on bouge le slider (pas de graphe dédié :
+    le bouton de visualisation a été retiré pour alléger l'UI).
+  - Le bouton "Ré-entraîner tout le pipeline avec cette proportion (§7 → §12)"
+    N'OUVRE PLUS de fenêtre matplotlib : il relance TOUTE la chaîne pour la
+    proportion choisie (s7.reentrainer puis s8→s9→s10→s11→s12.reentrainer), met à
+    jour les cartes de tous les onglets et affiche un résumé (train/test/CV/best)
+    dans un label. Les graphes des autres onglets reflètent le nouvel état à la
+    prochaine ouverture.
+
+    Pourquoi cette refonte : avant, chaque section calculait son état UNE fois à
+    l'import sur le split par défaut (80/20). La CV (§10), les métriques (§9), la
+    comparaison (§11)... restaient donc FIGÉES quelle que soit la proportion. On
+    a rendu le split courant modifiable dans la section 7 (reentrainer rebind
+    X_train/X_test/...) et les sections 8-12 le lisent désormais via
+    `import analyses.section7 as s7` (référence vivante, pas une copie figée à
+    l'import) ; chacune expose un reentrainer() qui recalcule son état sur le
+    split courant.
+
+  - Mesures avec le pipeline complet (montre la stabilité du modèle) :
+        90/10 : train 0.846  test 0.828  CV 0.845 ± 0.009
+        70/30 : train 0.846  test 0.841  CV 0.845 ± 0.006
+        50/50 : train 0.845  test 0.844  CV 0.843 ± 0.005
+    La régression logistique reste le meilleur algo (§11) dans tous les cas.
+    L'accuracy train varie de 0.845 à 0.847 entre 50/50 et 90/10 : c'est NORMAL
+    et même rassurant. La régression logistique est un modèle linéaire à faible
+    variance et le dataset est gros (10 000 lignes) ; dès ~5000 lignes
+    d'entraînement les coefficients ont convergé, donc en ajouter ne change quasi
+    rien. L'écart de 0.002 est d'ailleurs plus petit que l'écart-type de la CV
+    (bruit). La courbe d'apprentissage serait quasi plate : le modèle n'est pas
+    affamé de données. C'est l'accuracy de TEST qui bouge le plus (0.828→0.844),
+    et logiquement : plus le jeu de test est petit (90/10), plus son score est
+    bruité (moins d'échantillons pour mesurer).
+
+Choix et pourquoi (à mettre dans le rapport) :
+  - 80 % train / 20 % test → 8000 / 2000 échantillons. Compromis standard :
+    assez de données pour apprendre, assez pour évaluer.
+  - random_state=42 : reproductibilité (même découpe à chaque exécution).
+  - stratify=y : ESSENTIEL car les classes sont déséquilibrées (~69/31). Sans
+    stratification, le hasard pourrait déformer la proportion dans le test et
+    fausser l'évaluation. Vérifié : ~31.3 % de classe 1 dans train ET test.
+
+
+───────────────────────────────────────────────────────────────────────────────
+SECTION 8 — ENTRAÎNEMENT D'UN MODÈLE (RÉGRESSION LOGISTIQUE)
+───────────────────────────────────────────────────────────────────────────────
+But (PDF) : entraîner une LogisticRegression et répondre à 3 questions théoriques
+(hypothèse logit, minimisation, paramètres appris).
+
+Ce qu'on a fait / code : analyses/section8.py
+  - modele_logit = LogisticRegression(max_iter=1000, random_state=42).fit(...)
+    max_iter=1000 = marge confortable pour la convergence du solveur L-BFGS.
+  - show_coefficients(test_size=None) : poids w triés par |valeur| (barres), avec
+    biais b et accuracy sur train en sous-titre. Si test_size est fourni, on
+    re-découpe (section7.decouper) et on ré-entraîne avant de tracer.
+  - Le bouton qui déclenche ce ré-entraînement est placé dans l'onglet SECTION 7
+    (juste sous le slider) : "Ré-entraîner le modèle avec cette proportion (§8)".
+    Pratique : on règle le ratio train/test et on voit tout de suite comment les
+    coefficients et l'accuracy du modèle (§8) bougent.
+  (Le bouton "Principes de l'algorithme" a été retiré de l'UI car peu utile ; les
+   3 réponses théoriques restent en commentaire dans le code, section8.py:14-26.)
+
+Réponses aux 3 questions du PDF §8 (à recopier dans le rapport) :
+  1. Hypothèse : log( p(y=1|x) / p(y=0|x) ) = w·x + b
+     → le log-rapport des probabilités (le "logit") est LINÉAIRE en x.
+  2. Minimisation : on minimise la log-vraisemblance négative. Pas de solution
+     analytique → méthode ITÉRATIVE (descente de gradient, Newton, L-BFGS qui est
+     le solveur par défaut de scikit-learn).
+  3. Paramètres appris : les poids w (un par variable d'entrée) et le biais b.
+
+Résultats (à mettre dans le rapport) :
+  - Accuracy sur le jeu d'entraînement ≈ 0.847.
+  - Biais b ≈ -1.689 (cohérent avec une classe 1 minoritaire : a priori penché
+    vers 0).
+  - Variable la plus influente : driving_experience, poids ≈ -1.76 (plus
+    d'expérience → pousse fortement vers outcome=0 = pas de sinistre). Cohérent
+    avec la corrélation de la section 6.
+  - Lecture : poids > 0 (rouge) pousse vers outcome=1 ; poids < 0 (bleu) vers 0.
+  Remarque : duis a maintenant un poids non nul (grâce au fix section 5) ; dans
+  l'ancienne version son poids était mécaniquement 0 (colonne constante).
+
+
+───────────────────────────────────────────────────────────────────────────────
+SECTION 9 — ÉVALUATION DU MODÈLE
+───────────────────────────────────────────────────────────────────────────────
+But (PDF) : évaluer le modèle sur le jeu de TEST, définir et commenter les métriques.
+
+Ce qu'on a fait / code : analyses/section9.py
+  - predict() de modele_logit sur X_test (le jeu jamais vu à l'entraînement).
+  - show_matrice_confusion() : heatmap 2x2 annotée (réel en lignes, prédit en colonnes).
+  - show_metriques() : barres des 4 métriques (toutes entre 0 et 1).
+  - La classe positive est 1 (= sinistre).
+
+Résultats (jeu de test, à mettre dans le rapport) :
+  - Accuracy  = 0.835  (part de bonnes prédictions toutes classes confondues)
+  - Précision = 0.739  (parmi les "sinistre" prédits, combien en sont vraiment)
+  - Rappel    = 0.732  (parmi les vrais sinistres, combien on en retrouve)
+  - F1-score  = 0.736  (moyenne harmonique précision/rappel)
+  - Matrice : TN=1211, FP=162, FN=168, TP=459.
+
+Définitions (à recopier) :
+  - Accuracy = (TP+TN) / total. Trompeuse si classes déséquilibrées : ici prédire
+    toujours 0 donnerait déjà ~69 %. C'est pourquoi on regarde aussi précision/rappel.
+  - Précision = TP / (TP+FP). "Quand je dis sinistre, ai-je raison ?"
+  - Rappel = TP / (TP+FN). "Est-ce que je rate des sinistres ?"
+  - F1 = compromis entre les deux. Ici précision ≈ rappel ≈ 0.73 : le modèle est
+    équilibré sur la classe minoritaire, c'est correct vu le déséquilibre 69/31.
+
+
+───────────────────────────────────────────────────────────────────────────────
+SECTION 10 — VALIDATION CROISÉE
+───────────────────────────────────────────────────────────────────────────────
+But (PDF) : valider le modèle par validation croisée, comparer avec / sans.
+
+Ce qu'on a fait / code : analyses/section10.py
+  - KFold(n_splits=5, shuffle=True, random_state=42) sur X_train.
+  - cross_val_score(LogisticRegression, ..., scoring='accuracy') → 5 scores.
+  - show_scores_cv() : barres des 5 plis + ligne moyenne + ligne éval simple §9.
+
+Résultats / analyse (à mettre dans le rapport) :
+  - Scores par pli : 0.852, 0.849, 0.845, 0.852, 0.832.
+  - Moyenne CV ≈ 0.846, écart-type ≈ 0.007 (très faible).
+  - Comparaison : l'éval simple (section 9) donnait 0.835 sur une seule découpe.
+    La CV (0.846 ± 0.007) confirme que le modèle est STABLE : le score ne dépend
+    pas d'une découpe "chanceuse". La CV est plus fiable car elle moyenne 5 essais.
+
+
+───────────────────────────────────────────────────────────────────────────────
+SECTION 11 — COMPARAISON D'ALGORITHMES
+───────────────────────────────────────────────────────────────────────────────
+But (PDF) : comparer plusieurs algos et réglages, commenter le meilleur.
+
+Ce qu'on a fait / code : analyses/section11.py
+  - Même CV 5 plis pour TOUS (comparaison juste) :
+    LogisticRegression, Perceptron, KNN (k=3, 5, 7, 11).
+  - RESULTATS = {nom: (moyenne, écart-type)} ; MEILLEUR_NOM/MEILLEUR_SCORE exposés.
+  - show_comparaison() : barres horizontales + barre d'erreur (écart-type),
+    le meilleur en vert.
+
+Résultats / analyse (à mettre dans le rapport) :
+  - Régression logistique : 0.846 ± 0.007   ← MEILLEUR
+  - KNN k=11 : 0.830 ± 0.003   |  k=7 : 0.825  |  k=5 : 0.819  |  k=3 : 0.807
+  - Perceptron : 0.768 ± 0.025 (le moins bon ET le plus instable).
+  Lecture : pour le KNN, plus k augmente, meilleur et plus stable (k petit =
+  sensible au bruit). Mais aucun KNN ne bat la régression logistique. Le Perceptron
+  est en retrait : frontière linéaire "dure" sans probabilités, plus sensible.
+  Conclusion : la régression logistique reste le meilleur choix ici.
+
+
+───────────────────────────────────────────────────────────────────────────────
+SECTION 12 — SAUVEGARDE DU MEILLEUR MODÈLE
+───────────────────────────────────────────────────────────────────────────────
+But (PDF) : sauvegarder le meilleur modèle et vérifier qu'on peut le recharger.
+
+Ce qu'on a fait / code : analyses/section12.py
+  - On recrée le meilleur modèle désigné par la §11 (ici régression logistique),
+    on le réentraîne sur X_train, puis pickle.dump dans modele.pkl (à la racine).
+  - verifier() : pickle.load + predict sur 5 échantillons de test → on compare aux
+    prédictions du modèle d'origine. Doit être IDENTIQUE.
+  - bilan_texte() : fait tout et renvoie (ok, texte). L'onglet section 12 affiche
+    ce texte DIRECTEMENT dans un label tkinter (pas de fenêtre matplotlib pour
+    cette section, c'est juste du texte).
+
+Résultat : sauvegarde OK, rechargement vérifié identique (np.array_equal = True).
+Note : modele.pkl est dans .gitignore (on ne versionne pas les binaires).
+
+
+───────────────────────────────────────────────────────────────────────────────
+CHIFFRES CLÉS (récapitulatif rapide pour le rapport)
+───────────────────────────────────────────────────────────────────────────────
+  Dataset             : 10 000 lignes, 18 col. → 17 après suppression d'id.
+  Classes outcome     : ~69 % (0) / ~31 % (1), déséquilibré.
+  NA imputés          : credit_score 982, annual_mileage 957 (médiane).
+  Aberrants écrêtés   : credit_score 57 (IQR), annual_mileage 105, speeding 91,
+                        past_accidents 80 (percentile 1/99).
+  Qualitatives encodées (5) : driving_experience, education, income, vehicle_year,
+                              vehicle_type (encodage ORDINAL explicite, pas alphabétique).
+  Normalisation       : StandardScaler sur 16 colonnes.
+  Split               : 8000 train / 2000 test (80/20), stratifié, seed 42.
+  Régression logit    : accuracy train ≈ 0.847, biais ≈ -1.689,
+                        variable + influente = driving_experience (poids ≈ -1.76).
+  Top corrélations / outcome : driving_experience -0.50, age -0.45,
+                        vehicle_ownership -0.38, speeding -0.33, past_accidents -0.33.
+  Éval test (§9)      : accuracy 0.835, précision 0.739, rappel 0.732, f1 0.736.
+                        Matrice : TN=1211, FP=162, FN=168, TP=459.
+  Validation croisée (§10) : moyenne 0.846 ± 0.007 (5 plis) → modèle stable.
+  Comparaison (§11)   : logit 0.846 > KNN k=11 0.830 > ... > Perceptron 0.768.
+  Modèle sauvé (§12)  : régression logistique → modele.pkl, rechargement vérifié OK.
+
+
+───────────────────────────────────────────────────────────────────────────────
+QUESTIONS DU PDF AUXQUELLES LE RAPPORT FINAL DEVRA RÉPONDRE
+───────────────────────────────────────────────────────────────────────────────
+  §3  : objectif du problème de classification (prédire outcome, 0/1).
+  §4  : observations sur taille, types, NA, aberrants, distributions.
+  §5  : justifier le traitement des NA, l'encodage, la normalisation.
+  §6  : définir le coefficient de corrélation ; variables les plus corrélées
+        entre elles et avec outcome ; variables les plus pertinentes.
+  §7  : proportions train/test choisies (et pourquoi stratifié).
+  §8  : hypothèse logit, technique de minimisation, paramètres appris.
+  §9  : signification des métriques + analyse → fait (acc 0.835, prec/rappel ~0.73).
+  §10 : comparaison avec / sans validation croisée → fait (CV 0.846 ± 0.007).
+  §11 : commentaire sur le meilleur algo et les hyperparamètres → fait (logit gagne).
+  §12 : sauvegarde du meilleur modèle + vérif rechargement → fait (modele.pkl, OK).
+
+  TOUTES les sections (3 à 12) sont codées. Reste à rédiger le compte-rendu propre.
+
+═══════════════════════════════════════════════════════════════════════════════
